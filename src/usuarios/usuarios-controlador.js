@@ -1,8 +1,9 @@
 const Usuario = require('./usuarios-modelo')
-const { InvalidArgumentError } = require('../erros')
+const { InvalidArgumentError, NaoEncontrado } = require('../erros')
 
 const tokens = require('./tokens')
-const { EmailVerificacao } = require('./emails')
+const { EmailVerificacao, EmailRedefinicaoSenha } = require('./emails')
+const { ConversorUsuario } = require('../conversores')
 
 function geraEndereco (rota, token) {
   const baseURL = process.env.BASE_URL
@@ -58,7 +59,11 @@ module.exports = {
   async lista (req, res, proximo) {
     try {
       const usuarios = await Usuario.lista()
-      res.json(usuarios)
+      const conversor = new ConversorUsuario(
+        'json',
+        req.acesso.todos.permitido ? req.acesso.todos.atributos : req.acesso.apenasSeu.atributos
+      )
+      res.send(conversor.converter(usuarios))
     } catch (erro) {
       proximo(erro)
     }
@@ -79,6 +84,41 @@ module.exports = {
       const usuario = await Usuario.buscaPorId(req.params.id)
       await usuario.deleta()
       res.status(200).json()
+    } catch (erro) {
+      proximo(erro)
+    }
+  },
+
+  async esqueciMinhaSenha (requisicao, resposta, proximo) {
+    const respostaPadrao = { mensagem: 'Se encontrarmos um usuário com este email, vamos enviar uma mensagem com as instruções para redefinir a senha' }
+    try {
+      const usuario = await Usuario.buscaPorEmail(requisicao.body.email)
+      const token = await tokens.redefinicaoDeSenha.criarToken(usuario.id)
+      const email = new EmailRedefinicaoSenha(usuario, token)
+      await email.enviaEmail()
+
+      resposta.send(respostaPadrao)
+    } catch (erro) {
+      if (erro instanceof NaoEncontrado) {
+        resposta.send(respostaPadrao)
+        return
+      }
+
+      proximo(erro)
+    }
+  },
+
+  async trocarSenha (requisicao, resposta, proximo) {
+    try {
+      if (typeof requisicao.body.token !== 'string' || requisicao.body.token.lenght === 0) {
+        throw new InvalidArgumentError('O token está inválido')
+      }
+
+      const id = await tokens.redefinicaoDeSenha.verifica(requisicao.body.token)
+      const usuario = await Usuario.buscaPorId(id)
+      await usuario.adicionaSenha(requisicao.body.senha)
+      await usuario.atualizarSenha()
+      resposta.send({ mensagem: 'Sua senha foi atualizada com sucesso' })
     } catch (erro) {
       proximo(erro)
     }
